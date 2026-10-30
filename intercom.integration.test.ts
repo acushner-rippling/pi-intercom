@@ -2283,16 +2283,25 @@ test("inbound control resets with the session runtime", { concurrency: false }, 
   const { cleanup } = await setupClients();
   const harness = createExtensionHarness("inbound-control-reset-worker", { hasUI: true, ui: { notify: () => undefined } });
   let control: IntercomInboundControl | undefined;
+  let runtimeResetCount = 0;
 
   try {
     const { default: piIntercomExtension } = await import("./index.ts");
     piIntercomExtension(harness.pi as never);
     harness.pi.events.emit(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, {
-      onReady: (value: IntercomInboundControl) => { control = value; },
+      onReady: (value: IntercomInboundControl) => {
+        control = value;
+        value.onRuntimeReset(() => { runtimeResetCount += 1; });
+      },
     });
     await harness.emitLifecycle("session_start");
+    assert.equal(runtimeResetCount, 1);
     control!.setDeliveryHeld(true);
     assert.deepEqual(control!.snapshot(), { deliveryHeld: true, queuedCount: 0 });
+
+    await harness.emitLifecycle("session_start");
+    assert.equal(runtimeResetCount, 2);
+    assert.deepEqual(control!.snapshot(), { deliveryHeld: false, queuedCount: 0 });
 
     await harness.emitLifecycle("session_shutdown");
     assert.deepEqual(control!.snapshot(), { deliveryHeld: false, queuedCount: 0 });
@@ -3384,6 +3393,40 @@ test("human-first releases the next held peer only after the woken run starts", 
       await harness.emitLifecycle("agent_start");
       await waitForCondition(() => harness.sentMessages.length === 2, "peer B injected");
       assert.match(harness.sentMessages[1]?.message.content ?? "", /Peer B/);
+    } finally {
+      await harness.emitLifecycle("session_shutdown");
+      await cleanup();
+    }
+  });
+});
+
+test("human-first does not release focused inbound messages at turn end", { concurrency: false }, async () => {
+  await withIntercomConfig({ busyDelivery: "human-first" }, async () => {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    const { planner, cleanup } = await setupClients();
+    let idle = false;
+    const harness = createExtensionHarness("human-first-focus", { hasUI: true, isIdle: () => idle });
+    let control: IntercomInboundControl | undefined;
+    try {
+      piIntercomExtension(harness.pi as never);
+      harness.pi.events.emit(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, {
+        onReady: (value: IntercomInboundControl) => { control = value; },
+      });
+      await harness.emitLifecycle("session_start");
+      await harness.emitLifecycle("agent_start");
+      const target = await waitForSessionByName(planner, "human-first-focus");
+      control!.setDeliveryHeld(true);
+      assert.equal((await planner.send(target.id, { messageId: "focused-peer", text: "Focused" })).delivered, true);
+      await waitForCondition(() => control!.snapshot().queuedCount === 1, "focused inbound message");
+
+      await harness.emitLifecycle("turn_end", { message: { role: "assistant", stopReason: "stop" } });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(harness.sentMessages.length, 0);
+      assert.equal(control!.snapshot().queuedCount, 1);
+
+      idle = true;
+      control!.setDeliveryHeld(false);
+      await waitForCondition(() => harness.sentMessages.length === 1, "released focused message");
     } finally {
       await harness.emitLifecycle("session_shutdown");
       await cleanup();

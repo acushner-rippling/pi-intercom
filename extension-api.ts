@@ -66,6 +66,7 @@ export interface IntercomInboundControlSnapshot {
 export interface IntercomInboundControl {
   snapshot(): IntercomInboundControlSnapshot;
   setDeliveryHeld(held: boolean): void;
+  onRuntimeReset(listener: () => void): () => void;
 }
 
 export interface IntercomInboundControlRegistration {

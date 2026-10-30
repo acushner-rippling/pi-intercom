@@ -735,6 +735,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
   const heldInboundMessages: InboundMessageEntry[] = [];
   let heldInboundTimer: NodeJS.Timeout | null = null;
   let inboundDeliveryHeld = false;
+  const inboundRuntimeResetListeners = new Set<() => void>();
   const inboundControl: IntercomInboundControl = {
     snapshot: () => ({
       deliveryHeld: inboundDeliveryHeld,
@@ -743,6 +744,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     setDeliveryHeld(held: boolean) {
       inboundDeliveryHeld = held;
       if (!held && runtimeContext) flushHeldInboundMessages(runtimeContext, runtimeGeneration);
+    },
+    onRuntimeReset(listener) {
+      inboundRuntimeResetListeners.add(listener);
+      return () => inboundRuntimeResetListeners.delete(listener);
     },
   };
   function dropHeldInboundMessage(messageId: string, receipt: { status: MessageReceiptStatus; detail?: string }): boolean {
@@ -2134,6 +2139,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     agentRunning = false;
     inboundDeliveryHeld = false;
     expireHeldInboundMessages("session replaced before injection");
+    for (const listener of inboundRuntimeResetListeners) listener();
     activeTools.clear();
     startNamePoll();
     const startupGeneration = runtimeGeneration;
@@ -2298,7 +2304,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     if (config.busyDelivery === "human-first" && ctx.hasUI && event.message.role === "assistant"
       && event.message.stopReason !== "aborted" && event.message.stopReason !== "error"
       && heldInboundMessages.length > 0 && agentRunning
-      && !ctx.isIdle() && !ctx.hasPendingMessages() && getLiveContext(ctx)) {
+      && !inboundDeliveryHeld && !ctx.isIdle() && !ctx.hasPendingMessages() && getLiveContext(ctx)) {
       sendIncomingBrokerMessage(heldInboundMessages.shift()!, "steer", runtimeGeneration);
       if (heldInboundMessages.length === 0) clearHeldInboundTimer();
     }

@@ -543,12 +543,15 @@ pi.on("session_start", () => {
       control.setDeliveryHeld(true);
       // control.snapshot().queuedCount reports held messages.
       control.setDeliveryHeld(false);
+      // Runtime replacement clears the gate; reset local state if needed.
+      const unsubscribe = control.onRuntimeReset(() => { /* clear local state */ });
+      unsubscribe();
     },
   });
 });
 ```
 
-The control is session-local. Releasing the gate resumes normal queue draining, and ordinary session shutdown still expires messages that were not injected.
+The control is session-local. Releasing the gate resumes normal queue draining, and ordinary session shutdown still expires messages that were not injected. A runtime replacement clears the gate and invokes `onRuntimeReset` listeners so extensions can clear related state.
 
 Register during `session_start` so intercom includes the capability in its deferred broker registration:
 
