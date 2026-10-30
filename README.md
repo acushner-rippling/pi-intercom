@@ -551,7 +551,7 @@ pi.on("session_start", () => {
 });
 ```
 
-The control is session-local. Releasing the gate resumes normal queue draining, and ordinary session shutdown still expires messages that were not injected. A runtime replacement clears the gate and invokes `onRuntimeReset` listeners so extensions can clear related state.
+The control is session-local and has one shared gate; extensions using it must coordinate with each other. Releasing the gate resumes normal queue draining, and ordinary session shutdown still expires messages that were not injected. A runtime replacement clears the gate and invokes `onRuntimeReset` listeners so extensions can clear related state.
 
 Register during `session_start` so intercom includes the capability in its deferred broker registration:
 
