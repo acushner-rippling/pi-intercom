@@ -14,12 +14,15 @@ import { EXTENSION_BUS_FEATURE } from "./types.ts";
 import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.ts";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
+  INTERCOM_INBOUND_CONTROL_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
   INTERCOM_OUTBOX_REQUEST_EVENT,
   INTERCOM_OUTBOX_RESULT_EVENT,
   INTERCOM_SESSION_IDENTITY_EVENT,
   type IntercomExtensionChannel,
   type IntercomExtensionEvent,
+  type IntercomInboundControl,
+  type IntercomInboundControlRegistration,
   type IntercomExtensionOwner,
   type IntercomExtensionRegistration,
   type IntercomExtensionState,
@@ -731,6 +734,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
   let agentRunning = false;
   const heldInboundMessages: InboundMessageEntry[] = [];
   let heldInboundTimer: NodeJS.Timeout | null = null;
+  let inboundDeliveryHeld = false;
+  const inboundControl: IntercomInboundControl = {
+    snapshot: () => ({
+      deliveryHeld: inboundDeliveryHeld,
+      queuedCount: heldInboundMessages.length,
+    }),
+    setDeliveryHeld(held: boolean) {
+      inboundDeliveryHeld = held;
+      if (!held && runtimeContext) flushHeldInboundMessages(runtimeContext, runtimeGeneration);
+    },
+  };
   function dropHeldInboundMessage(messageId: string, receipt: { status: MessageReceiptStatus; detail?: string }): boolean {
     const index = heldInboundMessages.findIndex((entry) => entry.message.id === messageId);
     if (index < 0) return false;
@@ -1414,7 +1428,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     sendIncomingBrokerMessage(entry, "trigger", generation);
   }
   function flushHeldInboundMessages(ctx: ExtensionContext, generation: number): void {
-    if (!getLiveContext(ctx, generation)) return;
+    if (inboundDeliveryHeld || !getLiveContext(ctx, generation)) return;
     if (config.busyDelivery === "human-first" && ctx.hasUI) {
       if (ctx.isIdle() && !isIdleWakePending(ctx.sessionManager) && heldInboundMessages.length > 0) {
         deliverIncomingBrokerMessage(heldInboundMessages.shift()!, ctx, generation);
@@ -1477,7 +1491,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     emitMessageReceipt(receivedMessage.id, "acknowledged", "accepted by receiver");
     const entry = { from, message: receivedMessage, replyCommand, bodyText };
     // Busy without an agent run cannot steer; manual compaction can discard an appended custom entry.
-    if (heldInboundMessages.length > 0 || (!liveContext.isIdle() && (!agentRunning || (config.busyDelivery === "human-first" && liveContext.hasUI)))) {
+    if (inboundDeliveryHeld || heldInboundMessages.length > 0 || (!liveContext.isIdle() && (!agentRunning || (config.busyDelivery === "human-first" && liveContext.hasUI)))) {
       holdIncomingBrokerMessage(entry, liveContext, messageGeneration);
     } else {
       deliverIncomingBrokerMessage(entry, liveContext, messageGeneration);
@@ -2118,6 +2132,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     lastPresenceName = initialPresenceIdentity.name;
     lastPresenceRuntimeFallbackAlias = initialPresenceIdentity.runtimeFallbackAlias;
     agentRunning = false;
+    inboundDeliveryHeld = false;
     expireHeldInboundMessages("session replaced before injection");
     activeTools.clear();
     startNamePoll();
@@ -2202,6 +2217,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
       }
     })();
   }
+  const unsubscribeInboundControlRegister = pi.events.on(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const registration = payload as Partial<IntercomInboundControlRegistration>;
+    if (typeof registration.onReady !== "function") return;
+    registration.onReady(inboundControl);
+  });
   const unsubscribeExtensionRegister = pi.events.on(INTERCOM_EXTENSION_REGISTER_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
     const registration = payload as Partial<IntercomExtensionRegistration>;
@@ -2240,6 +2261,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
   });
   
   pi.on("session_shutdown", async () => {
+    unsubscribeInboundControlRegister();
     unsubscribeExtensionRegister();
     unsubscribeSubagentControlIntercom();
     unsubscribeSubagentResultIntercom();
@@ -2255,6 +2277,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, piVersion = VERSIO
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
     agentRunning = false;
+    inboundDeliveryHeld = false;
     expireHeldInboundMessages("session shut down before injection");
     activeTools.clear();
     if (client) {

@@ -1,6 +1,7 @@
 import type { SessionInfo } from "./types.ts";
 
 export const INTERCOM_EXTENSION_REGISTER_EVENT = "intercom:extension-register";
+export const INTERCOM_INBOUND_CONTROL_REGISTER_EVENT = "intercom:inbound-control-register";
 export const INTERCOM_EXTENSION_REGISTRY_READY_EVENT = "intercom:extension-registry-ready";
 export const INTERCOM_OUTBOX_REQUEST_EVENT = "intercom:outbox-request";
 export const INTERCOM_OUTBOX_RESULT_EVENT = "intercom:outbox-result";
@@ -56,6 +57,20 @@ export interface IntercomOutboxResultV1 {
 }
 
 export type IntercomOutboxResult = IntercomOutboxResultV1;
+
+export interface IntercomInboundControlSnapshot {
+  deliveryHeld: boolean;
+  queuedCount: number;
+}
+
+export interface IntercomInboundControl {
+  snapshot(): IntercomInboundControlSnapshot;
+  setDeliveryHeld(held: boolean): void;
+}
+
+export interface IntercomInboundControlRegistration {
+  onReady(control: IntercomInboundControl): void;
+}
 
 export interface IntercomExtensionOwner {
   sessionId: string;

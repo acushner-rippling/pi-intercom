@@ -527,6 +527,29 @@ The broker also runs from this runtime directory so its working directory does n
 
 Other Pi extensions can use intercom's broker for bounded, non-conversational coordination. Extension-channel traffic never calls `pi.sendMessage()`, never enters a session transcript, and never starts an agent turn.
 
+### Local inbound delivery control
+
+A local extension can hold messages before they are injected into the Pi session. The control only gates release of pi-intercom's existing FIFO queue; it never cancels or removes queued messages.
+
+```typescript
+import {
+  INTERCOM_INBOUND_CONTROL_REGISTER_EVENT,
+  type IntercomInboundControl,
+} from "pi-intercom/extension-api.ts";
+
+pi.on("session_start", () => {
+  pi.events.emit(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, {
+    onReady: (control: IntercomInboundControl) => {
+      control.setDeliveryHeld(true);
+      // control.snapshot().queuedCount reports held messages.
+      control.setDeliveryHeld(false);
+    },
+  });
+});
+```
+
+The control is session-local. Releasing the gate resumes normal queue draining, and ordinary session shutdown still expires messages that were not injected.
+
 Register during `session_start` so intercom includes the capability in its deferred broker registration:
 
 ```typescript

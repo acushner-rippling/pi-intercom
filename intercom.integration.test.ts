@@ -14,10 +14,12 @@ import type { BrokerMessage, Message, SessionInfo } from "./types.ts";
 import type { SendResult } from "./broker/client.ts";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
+  INTERCOM_INBOUND_CONTROL_REGISTER_EVENT,
   INTERCOM_OUTBOX_REQUEST_EVENT,
   INTERCOM_OUTBOX_RESULT_EVENT,
   INTERCOM_SESSION_IDENTITY_EVENT,
   type IntercomExtensionChannel,
+  type IntercomInboundControl,
   type IntercomOutboxResultV1,
   type IntercomSessionIdentityRequestV1,
 } from "./extension-api.ts";
@@ -2242,6 +2244,59 @@ test("intercom tool shows unique ID prefixes when names collide", { concurrency:
   } finally {
     await twinA.disconnect().catch(() => undefined);
     await twinB.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
+test("inbound control holds and releases messages without dropping them", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("inbound-control-worker", { hasUI: true, ui: { notify: () => undefined } });
+  let control: IntercomInboundControl | undefined;
+
+  try {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    piIntercomExtension(harness.pi as never);
+    harness.pi.events.emit(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, {
+      onReady: (value: IntercomInboundControl) => { control = value; },
+    });
+    await harness.emitLifecycle("session_start");
+
+    assert.ok(control);
+    const target = await waitForSessionByName(planner, "inbound-control-worker");
+    control.setDeliveryHeld(true);
+    assert.deepEqual(control.snapshot(), { deliveryHeld: true, queuedCount: 0 });
+
+    assert.equal((await planner.send(target.id, { messageId: "held-by-focus", text: "held" })).delivered, true);
+    await waitForCondition(() => control!.snapshot().queuedCount === 1, "held inbound message");
+    assert.equal(harness.sentMessages.length, 0);
+
+    control.setDeliveryHeld(false);
+    await waitForCondition(() => harness.sentMessages.some(({ message }) => message.details && (message.details as { message?: { id?: string } }).message?.id === "held-by-focus"), "released inbound message");
+    assert.deepEqual(control.snapshot(), { deliveryHeld: false, queuedCount: 0 });
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("inbound control resets with the session runtime", { concurrency: false }, async () => {
+  const { cleanup } = await setupClients();
+  const harness = createExtensionHarness("inbound-control-reset-worker", { hasUI: true, ui: { notify: () => undefined } });
+  let control: IntercomInboundControl | undefined;
+
+  try {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    piIntercomExtension(harness.pi as never);
+    harness.pi.events.emit(INTERCOM_INBOUND_CONTROL_REGISTER_EVENT, {
+      onReady: (value: IntercomInboundControl) => { control = value; },
+    });
+    await harness.emitLifecycle("session_start");
+    control!.setDeliveryHeld(true);
+    assert.deepEqual(control!.snapshot(), { deliveryHeld: true, queuedCount: 0 });
+
+    await harness.emitLifecycle("session_shutdown");
+    assert.deepEqual(control!.snapshot(), { deliveryHeld: false, queuedCount: 0 });
+  } finally {
     await cleanup();
   }
 });
